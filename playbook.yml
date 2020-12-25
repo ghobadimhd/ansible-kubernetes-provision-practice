@@ -178,17 +178,6 @@
       shell: "kubeadm join --config /root/kubeadm-node-join.yaml {{ kubernetes_kubeadm_init_extra_args | default('') }}"
       args:
         creates: /etc/kubernetes/kubelet.conf
-    
-    - name: create .kube directory
-      file: 
-        path: /root/.kube
-        state: directory
-
-    - name: copy kubectl config 
-      copy: 
-        src: /etc/kubernetes/admin.conf
-        dest: /root/.kube/config
-        remote_src: yes
 
 
 - hosts: "{{ groups['kubernetes_masters'][0] }}"
@@ -199,11 +188,7 @@
         dest: /root/
 
     - name: deploy calico
-      k8s: 
-        state: present
-        src: "{{ item }}"
-      loop: 
-        - /root/manifests/addons/calico.yaml
+      shell: "kubectl apply -f /root/manifests/addons/calico.yaml"
 
 
 

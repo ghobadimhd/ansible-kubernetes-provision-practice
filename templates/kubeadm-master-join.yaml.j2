@@ -1,0 +1,23 @@
+apiVersion: kubeadm.k8s.io/v1beta2
+caCertPath: /etc/kubernetes/pki/ca.crt
+kind: JoinConfiguration
+discovery:
+  bootstrapToken:
+    apiServerEndpoint: {{ kubernetes_loadbalancer_address }}:{{ kubernetes_loadbalancer_port }}
+    caCertHashes:
+    - {{ hostvars[groups['kubernetes_masters'][0]].kubernetes_ca_join_token.stdout }}
+    token: {{ hostvars[groups['kubernetes_masters'][0]].kubernetes_join_token.stdout }}
+  timeout: 5m0s
+  tlsBootstrapToken: {{ hostvars[groups['kubernetes_masters'][0]].kubernetes_join_token.stdout }}
+nodeRegistration:
+  name: {{ inventory_hostname }}
+  taints:
+  - effect: NoSchedule
+    key: node-role.kubernetes.io/master
+  kubeletExtraArgs:
+    node-ip: {{ hostvars[inventory_hostname].ansible_host }}
+controlPlane:
+  localAPIEndpoint:
+    advertiseAddress: {{ hostvars[inventory_hostname].ansible_host }}
+    bindPort: 6443
+  certificateKey: {{ hostvars[groups['kubernetes_masters'][0]].kubernetes_certfificate_key.stdout }}

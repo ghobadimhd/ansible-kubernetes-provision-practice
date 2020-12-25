@@ -1,0 +1,52 @@
+apiVersion: kubeadm.k8s.io/v1beta2
+kind: ClusterConfiguration
+kubernetesVersion: 1.18.8
+dns:
+  type: CoreDNS
+etcd:
+  local:
+    serverCertSANs:
+{% for node in groups['kubernetes_masters'] %}
+    - {{ hostvars[node].inventory_hostname }}
+    - {{ hostvars[node].ansible_host }}
+{% endfor %}
+    peerCertSANs:
+{% for node in groups['kubernetes_masters'] %}
+    - {{ hostvars[node].inventory_hostname }}
+    - {{ hostvars[node].ansible_host }}
+{% endfor %}
+
+networking:
+  # This CIDR is a Calico default. Substitute or remove for your CNI provider.
+  serviceSubnet: "{{ kubernetes_serviceSubnet }}"
+  podSubnet: "{{ kubernetes_podSubnet }}"
+  dnsDomain: "{{ kubernetes_cluster_name }}"
+apiServer:
+  certSANs:
+{% for node in groups['kubernetes_masters'] %}
+    - {{ hostvars[node].inventory_hostname }}
+    - {{ hostvars[node].ansible_host }}
+{% endfor %}
+    - {{ kubernetes_loadbalancer_address }}
+    - {{ kubernetes_cluster_name }}
+controlPlaneEndpoint: "{{ kubernetes_loadbalancer_address }}:{{ kubernetes_loadbalancer_port }}"
+certificatesDir: "/etc/kubernetes/pki"
+imageRepository: "{{ kubernetes_imageRepository }}"
+useHyperKubeImage: false
+clusterName: "{{ kubernetes_cluster_name }}"
+---
+apiVersion: kubeadm.k8s.io/v1beta2
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: {{ hostvars[inventory_hostname].ansible_host }}
+  bindPort: 6443
+nodeRegistration:
+  kubeletExtraArgs:
+    node-ip: {{ hostvars[inventory_hostname].ansible_host }}
+---
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+# This CIDR is a Calico default. Substitute or remove for your CNI provider.
+clusterCIDR: "{{ kubernetes_clustercidr }}"
+mode: "ipvs"
+

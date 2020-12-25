@@ -1,0 +1,210 @@
+---
+  # common
+- hosts: kubernetes_cluster
+  tasks:
+    - name: debug
+      debug:
+        msg: "{{ groups['kubernetes_masters'][0] }}"
+
+    - name: Add IP address of all hosts to all hosts
+      lineinfile: 
+        dest: /etc/hosts
+        line: '{{ hostvars[item]["ansible_host"] }} {{ hostvars[item]["ansible_hostname"] | default(hostvars[item]["inventory_hostname"]) }}'
+        state: present
+      loop: "{{ groups['kubernetes_cluster'] }}"
+
+    - name: set hostnames
+      hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Add Repository keys
+      apt_key:
+        keyserver: keyserver.ubuntu.com
+        id: "{{ item }}"
+      loop: 
+        - 6A030B21BA07F4FB
+        - 7EA0A9C3F273FCD8
+
+    - name: Add Docker and Kuberenetes repositories
+      register: add_apt_repo
+      apt_repository:
+        repo: "{{ item }}"
+        state: present
+      loop: 
+        - "{{ kubernetes_apt_repository }}"
+        - "{{ kubernetes_apt_docker_repository }}"
+
+- hosts: kubernetes_nodes
+  tasks:
+    - name: Disable swap in fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^([^#].*?\sswap\s+sw\s+.*)$'
+        replace: '# \1'
+
+    - name: Disable swap 
+      shell: swapoff -a
+
+    - name: create /etc/docker
+      file:
+        path: /etc/docker
+        state: directory
+
+    - name: configure docker daemon
+      template: 
+        src: templates/daemon.json.j2
+        dest: /etc/docker/daemon.json
+
+    - name: install python3-pip
+      apt: 
+        state: present 
+        update_cache: yes
+        name: 
+          - python3-pip
+
+    - name: install ansible k8s requirements
+      pip: 
+        state: present 
+        name: 
+          - kubernetes
+          - openshift
+          - pyyaml
+
+    - name: install docker and kubernetes
+      apt: 
+        state: present 
+        update_cache: yes
+        name: 
+          - "kubelet={{ kubernetes_kubernetesVersion }}-00"
+          - "kubeadm={{ kubernetes_kubernetesVersion }}-00"
+          - "kubectl={{ kubernetes_kubernetesVersion }}-00"
+          - "docker-ce"
+          - "docker-ce-cli"
+
+- hosts: kubernetes_loadbalancer
+  tasks:
+    - name: install haproxy
+      apt: 
+        name: haproxy
+        state: present
+
+    - name: configure haproxy
+      notify: restart haproxy
+      template:
+        src: templates/haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+        validate: "haproxy -c -f %s"
+
+  handlers:
+    - name: restart haproxy
+      service: 
+        name: haproxy
+        state: restarted
+
+
+- hosts: "{{ groups['kubernetes_masters'][0] }}"
+  tasks:
+    - name: create certificate key
+      shell: "kubeadm alpha certs certificate-key > /root/kubeadm-init-cert-key.txt"
+      args:
+        creates: /root/kubeadm-init-cert-key.txt
+
+    - name: load certificate key
+      register: kubernetes_certfificate_key
+      command: "cat /root/kubeadm-init-cert-key.txt"
+
+    - name: create kubernetes init config
+      template: 
+        src: templates/kubeadm-init-config.yml.j2
+        dest: /root/kubeadm-init-config.yml
+
+    - name: provision first master
+      shell: "kubeadm init --config /root/kubeadm-init-config.yml {{ kubernetes_kubeadm_init_extra_args | default('') }} ; kubeadm init phase upload-certs --upload-certs --certificate-key={{ kubernetes_certfificate_key.stdout }}"
+      args:
+        creates: /etc/kubernetes/pki
+
+    - name: generate ca join token
+      register: kubernetes_ca_join_token
+      shell: "echo sha256:$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //')"
+
+    - name: load join token
+      register: kubernetes_join_token
+      shell: "kubeadm token list -o json | grep authentication -B 4 | grep .token.: | sed -r 's/.*.token.: .(.*).,.*/\\1/'"
+
+    - name: create .kube directory
+      file: 
+        path: /root/.kube
+        state: directory
+
+    - name: copy kubectl config 
+      copy: 
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+    
+- hosts: "{{ groups['kubernetes_masters'][1:] }}"
+  tasks: 
+
+    - name: create kubernetes join config
+      template: 
+        src: templates/kubeadm-master-join.yaml.j2
+        dest: /root/kubeadm-master-join.yaml
+
+    - name: join master
+      shell: "kubeadm join --config /root/kubeadm-master-join.yaml {{ kubernetes_kubeadm_init_extra_args | default('') }}"
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+    
+    - name: create .kube directory
+      file: 
+        path: /root/.kube
+        state: directory
+
+    - name: copy kubectl config 
+      copy: 
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+
+- hosts: "kubernetes_workers"
+  tasks: 
+
+    - name: create kubernetes join config
+      template: 
+        src: templates/kubeadm-node-join.yaml.j2
+        dest: /root/kubeadm-node-join.yaml
+
+    - name: join node
+      shell: "kubeadm join --config /root/kubeadm-node-join.yaml {{ kubernetes_kubeadm_init_extra_args | default('') }}"
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+    
+    - name: create .kube directory
+      file: 
+        path: /root/.kube
+        state: directory
+
+    - name: copy kubectl config 
+      copy: 
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+
+
+- hosts: "{{ groups['kubernetes_masters'][0] }}"
+  tasks:
+    - name: copy manifests
+      copy:
+        src: files/manifests
+        dest: /root/
+
+    - name: deploy calico
+      k8s: 
+        state: present
+        src: "{{ item }}"
+      loop: 
+        - /root/manifests/addons/calico.yaml
+
+
+
+# - hosts: masters

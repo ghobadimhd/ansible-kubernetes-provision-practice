@@ -3,6 +3,11 @@ Kubernetes provision
 
 This is simple playbook for deploying kubernetes cluster.
 
+
+```bash
+ansible-playbook -i inventory.ini playbook.yml
+```
+
 Inventory example
 -----------------
 
